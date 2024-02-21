@@ -2,6 +2,8 @@ import ballerina/email;
 import ballerina/io;
 import ballerina/sql;
 import ballerinax/mysql;
+//SCIM module.
+import ballerinax/scim;
 
 type Result record {|
     string company;
@@ -16,6 +18,41 @@ type Users record {|
     string lastName;
 |};
 
+configurable string asgardeoOrg = "ptswamediainformatika";
+configurable string clientId = "TrYn3atmn1Ke6fda6OGxaUriOaUa";
+configurable string clientSecret = "lWkvpWPmNXZIH5HtfnuBMACSkBJiu_S6O59EJ1NpwgMa";
+
+configurable string hostDB = "mysql-fc9ea11a-3bf6-4aa6-8671-63704df5e0df-crmdb2579029684-chor.a.aivencloud.com";
+configurable string databaseName="defaultdb";
+configurable string usernameDB = "avnadmin";
+configurable string passwordDB = "AVNS_ns9K4kRCbTtF2X-kQ6R";
+configurable int portDB = 18271;
+
+configurable string[] scope = [
+    "internal_user_mgt_view",
+    "internal_user_mgt_list",
+    "internal_user_mgt_create",
+    "internal_user_mgt_delete",
+    "internal_user_mgt_update",
+    "internal_user_mgt_delete",
+    "internal_group_mgt_view",
+    "internal_group_mgt_list",
+    "internal_group_mgt_create",
+    "internal_group_mgt_delete",
+    "internal_group_mgt_update",
+    "internal_group_mgt_delete"
+];
+
+//Create a SCIM connector configuration
+scim:ConnectorConfig scimConfig = {
+    orgName: asgardeoOrg,
+    clientId: clientId,
+    clientSecret: clientSecret,
+    scope: scope
+};
+
+scim:Client scimClient = check new (scimConfig);
+
 configurable string host = "smtp.gmail.com";
 configurable string username = "lukman.fyrtio@gmail.com";
 configurable string password = "iudsjofizuejnclb";
@@ -26,13 +63,28 @@ email:SmtpConfiguration smtpConfig = {
 };
 final email:SmtpClient smtpClient1 = check new (host, username, password, smtpConfig);
 
-public function main() returns error? {
+function getUsers() returns error|scim:UserResource[] {
+
+    scim:UserSearch searchData = {};
+    scim:UserResponse|scim:ErrorResponse|error searchResponse = check scimClient->searchUser(searchData);
+
+    if searchResponse is scim:UserResponse {
+        scim:UserResource[] userResources = searchResponse.Resources ?: [];
+        return userResources;
+    }
+
+    return error("error occurred while searching the user");
+}
+
+public function main() returns sql:Error?|error {
+    io:println("Running scheduler for sending email when sales target reached");
+
     mysql:Client mysqlClient;
     do {
-        mysqlClient = check new (host = "mysql-fc9ea11a-3bf6-4aa6-8671-63704df5e0df-crmdb2579029684-chor.a.aivencloud.com",
-            user = "avnadmin",
-            password = "AVNS_ns9K4kRCbTtF2X-kQ6R",
-            database = "defaultdb", port = 18271
+        mysqlClient = check new (host = hostDB,
+            user = usernameDB,
+            password = passwordDB,
+            database = databaseName, port = portDB
         );
     } on fail var e {
         io:println("Failed to connect to database: ", e.message());
@@ -61,38 +113,45 @@ public function main() returns error? {
                                                                     ia.bup;
                                                                 `);
 
-    // Process the stream and convert results to Artist[] or return error.
-    Result item2;
-    check from Result item in salesData
-        do {
-            item2 = item;
-            //if sales target reached
-            if item.actual >= item.target {
+    Result[] sales = check from Result result in salesData
+        select result;
 
-                stream<Users, sql:Error?> usersStream = mysqlClient->query(`select u.email,u.bup,u.first_name as firstName,u.last_name as lastName from users u where u.bup=${item.company}`);
-
-                check from Users user in usersStream
-                    do {
-                        io:println(user.email);
-                        lock {
-                            check smtpClient1->sendMessage({
-                                            to: user.email,
-                                            subject: "Celebrating Success: Exceeding Sales Targets at " + item2.company,
-                                            body: getEmailContent(item2, user)
-                                    });
+    foreach Result item in sales {
+        if item.actual <= item.target {
+            error|scim:UserResource[] users = getUsers();
+            string[] emailsUsers = [];
+            if users is scim:UserResource[] {
+                foreach scim:UserResource user in users {
+                    string[] emails = user.emails ?: [];
+                    if emailsUsers.indexOf(emails[0]) is () {
+                        io:println(emails[0]);
+                        email:Error? sendMessage =  smtpClient1->sendMessage({
+                            to: emails[0],
+                            subject: "Celebrating Success: Exceeding Sales Targets at " + item.company,
+                            body: getEmailContent(item, user)
+                        });
+                        if sendMessage is email:Error {
+                        emailsUsers.push("Sending email failed to : ", emails[0]);
+                        }else{
+                              emailsUsers.push("Sending email succes to : ", emails[0]);
                         }
-                    };
+                    }
 
+                }
             }
+        }
+    }
+    sql:Error? close = mysqlClient.close();
+    if close is sql:Error {
+        io:println("Failed to close database");
+        return;
+    }
 
-        };
-    _ = check mysqlClient.close();
-    return;
 }
 
-function getEmailContent(Result data, Users user)
+function getEmailContent(Result data, scim:UserResource user)
         returns string =>
-    string `Dear ${user.firstName} ${user.lastName},
+    string `Dear ${user.displayName ?: ""} ,
 
 I hope this email finds you well. I am thrilled to share some exciting news with you – our team has achieved remarkable success by surpassing the set sales targets for the this Month!
 
@@ -101,7 +160,7 @@ I am proud to announce that not only did we meet our sales targets, but we also 
 Key Achievements:
 Target: ${data.target} bn
 Actual Sales: ${data.actual} bn
-Company : ${user.bup}
+Company : ${data.company}
 
 Best regards,
 Admin
