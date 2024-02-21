@@ -117,7 +117,7 @@ public function main() returns sql:Error?|error {
         select result;
 
     foreach Result item in sales {
-        if item.actual <= item.target {
+        if item.actual >= item.target {
             error|scim:UserResource[] users = getUsers();
             string[] emailsUsers = [];
             if users is scim:UserResource[] {
