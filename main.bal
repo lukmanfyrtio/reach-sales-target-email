@@ -19,17 +19,17 @@ type Users record {|
 |};
 
 configurable string asgardeoOrg = ?;
-configurable string clientId =  ?;
-configurable string clientSecret =  ?;
+configurable string clientId = ?;
+configurable string clientSecret = ?;
 
-configurable string hostDB =  ?;
+configurable string hostDB = ?;
 configurable string databaseName= ?;
-configurable string usernameDB =  ?;
-configurable string passwordDB =  ?;
-configurable int portDB =  ?;
-configurable string host =  ?;
-configurable string username =  ?;
-configurable string password =  ?;
+configurable string usernameDB = ?;
+configurable string passwordDB = ?;
+configurable int portDB = ?;
+configurable string host = ?;
+configurable string username = ?;
+configurable string password = ?;
 
 configurable string[] scope = [
     "internal_user_mgt_view",
