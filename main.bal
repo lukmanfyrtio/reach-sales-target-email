@@ -18,15 +18,18 @@ type Users record {|
     string lastName;
 |};
 
-configurable string asgardeoOrg = "ptswamediainformatika";
-configurable string clientId = "TrYn3atmn1Ke6fda6OGxaUriOaUa";
-configurable string clientSecret = "lWkvpWPmNXZIH5HtfnuBMACSkBJiu_S6O59EJ1NpwgMa";
+configurable string asgardeoOrg = ?;
+configurable string clientId =  ?;
+configurable string clientSecret =  ?;
 
-configurable string hostDB = "mysql-fc9ea11a-3bf6-4aa6-8671-63704df5e0df-crmdb2579029684-chor.a.aivencloud.com";
-configurable string databaseName="defaultdb";
-configurable string usernameDB = "avnadmin";
-configurable string passwordDB = "AVNS_ns9K4kRCbTtF2X-kQ6R";
-configurable int portDB = 18271;
+configurable string hostDB =  ?;
+configurable string databaseName= ?;
+configurable string usernameDB =  ?;
+configurable string passwordDB =  ?;
+configurable int portDB =  ?;
+configurable string host =  ?;
+configurable string username =  ?;
+configurable string password =  ?;
 
 configurable string[] scope = [
     "internal_user_mgt_view",
@@ -52,10 +55,6 @@ scim:ConnectorConfig scimConfig = {
 };
 
 scim:Client scimClient = check new (scimConfig);
-
-configurable string host = "smtp.gmail.com";
-configurable string username = "lukman.fyrtio@gmail.com";
-configurable string password = "iudsjofizuejnclb";
 
 email:SmtpConfiguration smtpConfig = {
     port: 465,
