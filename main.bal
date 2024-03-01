@@ -180,7 +180,7 @@ public function main() returns sql:Error?|error {
                 } else {
                      _ = check mysqlClient->execute(`
                         INSERT INTO defaultdb.email_notification_log
-                        (time_received, sender_email, subject, body)
+                        (time_received, email, subject, body)
                         VALUES(  CURRENT_TIMESTAMP, ${user.email}, ${subject}, ${body});`);
                     io:println("Sending email succes to : ", user.email);
                 }
