@@ -9,6 +9,14 @@ type Result record {|
     string company;
     decimal target;
     decimal actual;
+    string departmentId;
+    string companyId;
+    string departmentName;
+|};
+
+type UserMapping record {|
+    string email;
+    string userId;
 |};
 
 type Users record {|
@@ -18,12 +26,16 @@ type Users record {|
     string lastName;
 |};
 
+type EmailLog record {|
+    int emailCount;
+|};
+
 configurable string asgardeoOrg = ?;
 configurable string clientId = ?;
 configurable string clientSecret = ?;
 
 configurable string hostDB = ?;
-configurable string databaseName= ?;
+configurable string databaseName = ?;
 configurable string usernameDB = ?;
 configurable string passwordDB = ?;
 configurable int portDB = ?;
@@ -75,67 +87,105 @@ function getUsers() returns error|scim:UserResource[] {
     return error("error occurred while searching the user");
 }
 
+function findEmailById(string id) returns error|scim:UserResource {
+
+    scim:UserSearch searchData = {filter: string `id eq ${id}`};
+    scim:UserResponse|scim:ErrorResponse|error searchResponse = check scimClient->searchUser(searchData);
+
+    if searchResponse is scim:UserResponse {
+        scim:UserResource[] userResources = searchResponse.Resources ?: [];
+
+        return userResources[0];
+    }
+
+    return error("error occurred while searching the user");
+}
+
+mysql:Client mysqlClient = check new (host = hostDB,
+    user = usernameDB,
+    password = passwordDB,
+    database = databaseName, port = portDB
+);
+
 public function main() returns sql:Error?|error {
     io:println("Running scheduler for sending email when sales target reached");
 
-    mysql:Client mysqlClient;
-    do {
-        mysqlClient = check new (host = hostDB,
-            user = usernameDB,
-            password = passwordDB,
-            database = databaseName, port = portDB
-        );
-    } on fail var e {
-        io:println("Failed to connect to database: ", e.message());
-        return;
-    }
-
     // Execute simple query to retrieve all sales data
     stream<Result, sql:Error?> salesData = mysqlClient->query(`
-                                                                SELECT
-                                                                    COALESCE(ia.bup,
-                                                                    'SWAMEDIA') AS company,
-                                                                    COALESCE(ROUND(SUM(CAST(pokok_penerimaan AS DECIMAL(18, 2)) / 1000000000.0), 2), 0) AS actual,
-                                                                    MAX(si.target) AS target
-                                                                FROM
-                                                                    invoice_aging ia
-                                                                LEFT JOIN sales_info si ON
-                                                                    ia.bup = si.bup
-                                                                    AND YEAR(CURRENT_DATE()) = si.tahun
-                                                                    AND MONTHNAME(CURRENT_DATE()) = si.bulan
-                                                                WHERE
-                                                                    MONTHNAME(STR_TO_DATE(tgl_masuk_rekening_pokok, '%d/%m/%Y')) = MONTHNAME(CURRENT_DATE())
-                                                                    AND YEAR(STR_TO_DATE(tgl_masuk_rekening_pokok,
-                                                                    '%d/%m/%Y')) = YEAR(CURRENT_DATE())
-                                                                    AND si.bup = 'SWAMEDIA'
-                                                                GROUP BY
-                                                                    ia.bup;
+                                                            select
+                                                                BIN_TO_UUID(sr.department_id) as departmentId,
+                                                                BIN_TO_UUID(c.id) as companyId,
+                                                                c.name as company,
+                                                                d.name as departmentName,
+                                                                COALESCE(ROUND(SUM(CAST(sr.principal_receipt AS DECIMAL(18, 2)) / 1000000000.0), 2), 0) AS actual,
+                                                                MAX(ct.target) AS target
+                                                            from
+                                                                sales_revenue sr
+                                                            left join sales_leads sl on
+                                                                sl.id = sr.sales_leads_id
+                                                            LEFT JOIN department d on
+                                                                d.id = sr.department_id
+                                                            left join company c on
+                                                                c.id = d.company_id
+                                                            left join company_target ct 
+                                                            on
+                                                                ct.department_id = d.id
+                                                                AND YEAR(CURRENT_DATE()) = ct.year
+                                                                AND MONTHNAME(CURRENT_DATE()) = ct.month
+                                                            GROUP BY
+                                                                sr.department_id
+                                                            HAVING
+                                                                actual >= target;
                                                                 `);
 
     Result[] sales = check from Result result in salesData
         select result;
 
     foreach Result item in sales {
-        if item.actual >= item.target {
-            error|scim:UserResource[] users = getUsers();
-            string[] emailsUsers = [];
-            if users is scim:UserResource[] {
-                foreach scim:UserResource user in users {
-                    string[] emails = user.emails ?: [];
-                    if emailsUsers.indexOf(emails[0]) is () {
-                        io:println(emails[0]);
-                        email:Error? sendMessage =  smtpClient1->sendMessage({
-                            to: emails[0],
-                            subject: "Celebrating Success: Exceeding Sales Targets at " + item.company,
-                            body: getEmailContent(item, user)
-                        });
-                        if sendMessage is email:Error {
-                        emailsUsers.push("Sending email failed to : ", emails[0]);
-                        }else{
-                              emailsUsers.push("Sending email succes to : ", emails[0]);
-                        }
-                    }
 
+        stream<UserMapping, sql:Error?> usersData = mysqlClient->query(`
+                                                        select
+                                                            email,
+                                                            user_id as userId
+                                                        from
+                                                            user_mapping um
+                                                        where
+                                                            um.company_id = UUID_TO_BIN(${item.companyId})
+                                                        group by
+                                                            um.email ,
+                                                            user_id
+                                                                `);
+
+        UserMapping[] users = check from UserMapping result in usersData
+            select result;
+
+        foreach UserMapping user in users {
+            io:println(user.toJson());
+            error|scim:UserResource searchResponse = findEmailById(user.userId);
+            if searchResponse is scim:UserResource {
+
+                string displayName = string `${searchResponse?.name?.givenName ?: ""} ${searchResponse?.name?.familyName ?: ""}`;
+                io:println(displayName, item.company, user, user.email);
+                string subject = "Celebrating Success: Exceeding Sales Targets at " + item.company;
+                string body = getEmailContent(item, displayName);
+                boolean exist = check checkEmailExists(body, user.email, subject);
+                if !exist {
+                email:Error? sendMessage = smtpClient1->sendMessage({
+                    to: user.email,
+                    subject: subject,
+                    body: body
+                });
+                if sendMessage is email:Error {
+                    io:println("Sending email failed to : ", user.email,body,subject);
+                } else {
+                     _ = check mysqlClient->execute(`
+                        INSERT INTO defaultdb.email_notification_log
+                        (time_received, sender_email, subject, body)
+                        VALUES(  CURRENT_TIMESTAMP, ${user.email}, ${subject}, ${body});`);
+                    io:println("Sending email succes to : ", user.email);
+                }
+                }else{
+                      io:println("Email sudah dikirim sebelumnya ke "+user.email);
                 }
             }
         }
@@ -148,20 +198,38 @@ public function main() returns sql:Error?|error {
 
 }
 
-function getEmailContent(Result data, scim:UserResource user)
-        returns string =>
-    string `Dear ${user.displayName ?: ""} ,
+function getEmailContent(Result data, string name)
 
-I hope this email finds you well. I am thrilled to share some exciting news with you – our team has achieved remarkable success by surpassing the set sales targets for the this Month!
+    returns string =>
+    string `Dear ${name},
+
+I hope this email finds you well. I am thrilled to share some exciting news with you – our team has achieved remarkable success by surpassing the set sales targets for this month!
 
 I am proud to announce that not only did we meet our sales targets, but we also exceeded them, showcasing the dedication and hard work of each member of our sales team.
 
 Key Achievements:
-Target: ${data.target} bn
-Actual Sales: ${data.actual} bn
-Company : ${data.company}
+- Target: ${data.target} billion
+- Actual Sales: ${data.actual} billion
+- Department Name: ${data.departmentName}
+- Company: ${data.company}
+
+This outstanding accomplishment reflects the commitment and teamwork that define our company culture. It's a testament to your efforts and contribution to our collective success.
+
+Thank you for your hard work and dedication. Let's continue to set new heights and achieve even greater milestones together.
 
 Best regards,
 Admin
-
 `;
+
+function checkEmailExists(string body, string email, string subject) returns boolean|error {
+
+    stream<EmailLog, sql:Error?> emailLogs = mysqlClient->query(`SELECT COUNT(*) AS emailCount FROM email_notification_log
+                             WHERE email = ${email} AND body = ${body} AND subject = ${subject}`);
+
+    // Process the stream and convert results to Album[] or return error.
+    EmailLog[] emailLogs1 = check from EmailLog emailLog in emailLogs
+        select emailLog;
+        io:println(emailLogs1[0].emailCount);
+    return emailLogs1[0].emailCount > 0;
+}
+
